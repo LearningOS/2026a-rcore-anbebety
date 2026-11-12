@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "courseId": 2073,
+  "repository": "LearningOS/2026a-rcore-anbebety",
+  "user": "anbebety",
+  "totalScore": 500,
+  "chapters": {
+    "ch3": {
+      "points": "7/7",
+      "score": 100,
+      "commit": "255530a0f0fa81bc824884eff8171a57ea11b54d"
+    }
+  },
+  "score": 100,
+  "upload": {
+    "status": "pending",
+    "runId": "43225579359",
+    "runAttempt": "1"
+  }
+}
