@@ -107,7 +107,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
-                let frame = frame_alloc().unwrap();
+                let frame = frame_alloc()?;
                 *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
                 self.frames.push(frame);
             }
@@ -146,14 +146,62 @@ impl PageTable {
         let pte = self.find_pte(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
+        self.prune_empty_tables(vpn);
     }
+
+    /// Codex-assisted: release owned, empty intermediate tables from the leaf upwards.
+    fn prune_empty_tables(&mut self, vpn: VirtPageNum) {
+        let indexes = vpn.indexes();
+        let mut ppn = self.root_ppn;
+        let mut path = Vec::new();
+        for index in indexes.iter().take(2) {
+            let pte = ppn.get_pte_array()[*index];
+            if !pte.is_valid() {
+                break;
+            }
+            path.push((ppn, *index, pte.ppn()));
+            ppn = pte.ppn();
+        }
+        for (parent, index, child) in path.into_iter().rev() {
+            if child.get_pte_array().iter().any(PageTableEntry::is_valid) {
+                break;
+            }
+            if let Some(owner) = self.frames.iter().position(|frame| frame.ppn == child) {
+                parent.get_pte_array()[index] = PageTableEntry::empty();
+                self.frames.swap_remove(owner);
+            } else {
+                break;
+            }
+        }
+    }
+
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-        self.find_pte(vpn).map(|pte| *pte)
+        self.find_pte(vpn)
+            .filter(|pte| pte.is_valid())
+            .map(|pte| *pte)
     }
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
+    }
+    /// 尝试建立映射，页表分配失败或目标页已映射时返回 false。
+    pub fn try_map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> bool {
+        let pte = match self.find_pte_create(vpn) {
+            Some(pte) => pte,
+            None => {
+                self.prune_empty_tables(vpn);
+                return false;
+            }
+        };
+
+        if pte.is_valid() {
+            return false;
+        }
+
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+
+        true
     }
 }
 
@@ -178,4 +226,72 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// 检查用户虚拟地址范围是否具有指定权限。
+///
+/// token: 当前用户页表 token
+/// start: 用户虚拟地址
+/// len: 字节长度
+/// required: 所要求的 PTE 权限
+pub fn check_user_buffer(token: usize, start: usize, len: usize, required: PTEFlags) -> bool {
+    // 空缓冲区不需要访问任何页面
+    if len == 0 {
+        return true;
+    }
+
+    // 检查地址加法是否溢出
+    let end = match start.checked_add(len) {
+        Some(end) => end,
+        None => return false,
+    };
+
+    // Sv39 用户地址的正向规范地址范围为 [0, 2^38)
+    let user_end = 1usize << 38;
+
+    if start >= user_end || end > user_end {
+        return false;
+    }
+
+    // 获取当前用户页表
+    let page_table = PageTable::from_token(token);
+
+    // 起始虚拟页号
+    let mut vpn = VirtAddr::from(start).floor();
+
+    // 最后一个字节所在的虚拟页号
+    let end_vpn = VirtAddr::from(end - 1).floor();
+
+    loop {
+        // 查询页表项
+        let pte = match page_table.translate(vpn) {
+            Some(pte) => pte,
+            None => return false,
+        };
+
+        // 检查页表项有效性
+        if !pte.is_valid() {
+            return false;
+        }
+
+        let flags = pte.flags();
+
+        // 必须允许用户态访问，并满足指定权限
+        // Codex-assisted, based on the chapter 4 permission requirements.
+        // W=1/R=0 is reserved by Sv39, and a non-leaf PTE grants no byte access.
+        if !flags.contains(PTEFlags::U | required)
+            || !flags.intersects(PTEFlags::R | PTEFlags::X)
+            || (flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R))
+        {
+            return false;
+        }
+
+        if vpn == end_vpn {
+            break;
+        }
+
+        vpn.step();
+    }
+
+    true
 }

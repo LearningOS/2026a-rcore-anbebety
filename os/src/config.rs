@@ -20,6 +20,7 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// the virtual addr of trap context
 pub const TRAP_CONTEXT_BASE: usize = TRAMPOLINE - PAGE_SIZE;
 /// clock frequency
-pub const CLOCK_FREQ: usize = 12500000;
+// Codex-assisted: QEMU 8.2.2 virt DTB reports timebase-frequency = 10 MHz.
+pub const CLOCK_FREQ: usize = 10_000_000;
 /// the physical memory end
 pub const MEMORY_END: usize = 0x88000000;

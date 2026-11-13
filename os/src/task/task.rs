@@ -1,6 +1,6 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
@@ -28,6 +28,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Number of times each syscall has been called.
+    syscall_times: [usize; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlock {
@@ -63,6 +66,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_times: [0; MAX_SYSCALL_NUM],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -78,22 +82,32 @@ impl TaskControlBlock {
     /// change the location of the program break. return None if failed.
     pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {
         let old_break = self.program_brk;
-        let new_brk = self.program_brk as isize + size as isize;
-        if new_brk < self.heap_bottom as isize {
+        let new_brk = old_break.checked_add_signed(size as isize)?;
+        if new_brk < self.heap_bottom || new_brk >= (1usize << 38) {
             return None;
         }
-        let result = if size < 0 {
-            self.memory_set
-                .shrink_to(VirtAddr(self.heap_bottom), VirtAddr(new_brk as usize))
-        } else {
-            self.memory_set
-                .append_to(VirtAddr(self.heap_bottom), VirtAddr(new_brk as usize))
-        };
+        let result = self
+            .memory_set
+            .resize_heap(old_break.into(), new_brk.into());
         if result {
             self.program_brk = new_brk as usize;
             Some(old_break)
         } else {
             None
+        }
+    }
+    /// 记录一次系统调用
+    pub fn record_syscall(&mut self, syscall_id: usize) {
+        if let Some(count) = self.syscall_times.get_mut(syscall_id) {
+            *count += 1;
+        }
+    }
+
+    /// 查询某个系统调用的执行次数
+    pub fn get_syscall_count(&self, syscall_id: usize) -> isize {
+        match self.syscall_times.get(syscall_id) {
+            Some(count) => *count as isize,
+            None => -1,
         }
     }
 }

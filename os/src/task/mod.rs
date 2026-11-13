@@ -15,14 +15,14 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
+pub use context::TaskContext;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
-pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -120,6 +120,15 @@ impl TaskManager {
         inner.tasks[inner.current_task].get_user_token()
     }
 
+    /// 对当前任务的 MemorySet 执行操作
+    fn with_current_memory_set<R>(&self, f: impl FnOnce(&mut MemorySet) -> R) -> R {
+        let mut inner = self.inner.exclusive_access();
+
+        let current = inner.current_task;
+
+        f(&mut inner.tasks[current].memory_set)
+    }
+
     /// Get the current 'Running' task's trap contexts.
     fn get_current_trap_cx(&self) -> &'static mut TrapContext {
         let inner = self.inner.exclusive_access();
@@ -152,6 +161,23 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+    /// 记录当前任务的一次系统调用
+    fn record_current_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+
+        let current = inner.current_task;
+
+        inner.tasks[current].record_syscall(syscall_id);
+    }
+
+    /// 查询当前任务的系统调用次数
+    fn get_current_syscall_count(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+
+        let current = inner.current_task;
+
+        inner.tasks[current].get_syscall_count(syscall_id)
     }
 }
 
@@ -201,4 +227,19 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Mutably access the currently running task's address space.
+pub fn with_current_memory_set<R>(f: impl FnOnce(&mut MemorySet) -> R) -> R {
+    TASK_MANAGER.with_current_memory_set(f)
+}
+
+/// Count a syscall before dispatching it.
+pub fn record_syscall(syscall_id: usize) {
+    TASK_MANAGER.record_current_syscall(syscall_id);
+}
+
+/// Read a syscall count belonging to the current task only.
+pub fn get_syscall_count(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_current_syscall_count(syscall_id)
 }
